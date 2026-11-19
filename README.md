@@ -47,7 +47,7 @@ The pipeline follows a modular, parallel data flow:
 1.  **Clone the repository:**
 
     ```bash
-    git clone <your-repo-url>
+    git clone https://github.com/roshanmgupta/Exoskeleton.gi
     cd <your-repo-directory>
     ```
 
@@ -115,4 +115,4 @@ Once calibration is complete and your `config_live.py` is set up, you can start 
   * `mvc_calibration_tool_live.py`: A standalone command-line tool for performing MVC calibration.
   * `fatigue_analyzer.py`: Contains the fatigue detection logic based on linear regression of MDF values.
   * `requirements.txt`: A list of all Python package dependencies and their versions.
-  * `mvc_references.json`: Stores the output of the calibration tool. It is used as an input by the main processor for %MVC calculation."# Exoskeleton" 
+  * `mvc_references.json`: Stores the output of the calibration tool. It is used as an input by the main processor for %MVC calculation.
