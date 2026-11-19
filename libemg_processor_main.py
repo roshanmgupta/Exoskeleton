@@ -607,7 +607,7 @@ def main():
     for dev_conf in config.DEVICE_STREAMERS_CONFIG:
         if args.mock:
             logger.info(f"Starting MOCK synthetic EMG UDP streamer for {dev_conf['name']}...")
-            p = multiprocessing.Process(
+            p = threading.Thread(
                 target=run_mock_streamer_process,
                 args=(
                     dev_conf["name"],
@@ -617,9 +617,10 @@ def main():
                     config.SAMPLING_RATE_HZ,
                     args.duration,
                     25.0,
-                    main_stop_event,
+                    thread_stop_event,
                 ),
-                name=f"MockStreamer-{dev_conf['name']}"
+                name=f"MockStreamer-{dev_conf['name']}",
+                daemon=True,
             )
         else:
             logger.info(f"Starting UDP streamer process for {dev_conf['name']}...")
@@ -630,7 +631,7 @@ def main():
                                         name=f"Streamer-{dev_conf['name']}")
         streamer_processes.append(p)
         p.start()
-        time.sleep(0.2 if args.mock else 1) # Stagger streamer starts
+        time.sleep(0.05 if args.mock else 1) # Stagger streamer starts
 
     for device_config_entry in config.DEVICE_STREAMERS_CONFIG:
         device_identifier = device_config_entry["name"]
@@ -704,7 +705,11 @@ def main():
         logger.info("Waiting for streamer processes to terminate...")
         for p_idx, p in enumerate(streamer_processes):
             p.join(timeout=10)
-            if p.is_alive(): logger.warning(f"Streamer {p.name} did not terminate. Forcing."); p.terminate(); p.join(2)
+            if p.is_alive():
+                logger.warning(f"Streamer {p.name} did not terminate gracefully.")
+                if hasattr(p, "terminate"):
+                    p.terminate()
+                    p.join(2)
 
         logger.info("Waiting for processor threads to join...")
         for t_idx, t in enumerate(processor_threads):

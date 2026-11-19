@@ -43,7 +43,10 @@ class RawEMGBrokerClient:
     def _initialize_mqtt(self):
         """Initializes the MQTT client."""
         try:
-            self.client = mqtt.Client()
+            if hasattr(mqtt, "CallbackAPIVersion"):
+                self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+            else:
+                self.client = mqtt.Client()
             self.client.on_connect = self._on_mqtt_connect
             self.client.on_disconnect = self._on_mqtt_disconnect
             self.client.connect(self.config['host'], self.config['port'], 60)
