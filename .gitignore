@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+.dvenv/
+env/
+
+# Environment variables & local secrets
+.env
+.env.local
+
+# Jupyter
+.ipynb_checkpoints/
+Untitled*.ipynb
+
+# IDEs & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Office temp/lock files
+~$*

@@ -242,20 +242,21 @@ def run_streamer_process(ble_address, device_name, char_uuid, commands,
     asyncio.run(streamer.start_streaming())
 
 if __name__ == "__main__":
+    import os
+    import threading
+
     # This __main__ is for testing one streamer.
     # The libemg_processor_main.py will launch these as processes.
     print("--- Standalone MCell BLE to UDP Streamer Test ---")
-    
-    # Example: Test configuration for one device (e.g., Shirt02)
-    # In a real scenario, these would come from a config file or arguments
+
+    # Set BLE_ADDR_TEST in your environment to test against a physical MCell unit.
     test_device_config = {
-        "ble_address": "20F29B1C-CC39-7881-A1FB-298A5A2E9011", # SHIRT02 ADDRESS
+        "ble_address": os.getenv("BLE_ADDR_TEST", "00:00:00:00:00:02"),
         "udp_port": 50002,
-        "name": "Shirt02-Right-TestStreamer",
+        "name": "Shirt01-Right-TestStreamer",
         # num_channels and data_rate_hz will be determined from MCell header
     }
-    # For standalone test, create a dummy stop event
-    dummy_stop_event = multiprocessing.Event() if 'multiprocessing' in dir() else threading.Event()
+    dummy_stop_event = threading.Event()
 
 
     # Load commands from a conceptual config for consistency

@@ -1,118 +1,167 @@
-# Real-Time EMG Analysis and Data Streaming Pipeline
+# Real-Time EMG Analysis & Dual-Stream Data Pipeline (Exoskeleton)
 
-This project is a comprehensive, multi-threaded Python pipeline for real-time acquisition, processing, and analysis of Electromyography (EMG) data from MCell wireless sensors. It is designed to monitor multiple muscles simultaneously, calculate muscle activation features (e.g., RMS, MDF), detect signs of muscle fatigue, and stream both raw and processed data to configurable message brokers.
+[![CI](https://github.com/roshanmgupta/Exoskeleton/actions/workflows/ci.yml/badge.svg)](https://github.com/roshanmgupta/Exoskeleton/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Apache Kafka](https://img.shields.io/badge/Apache%20Kafka-3.8-231F20?logo=apachekafka&logoColor=white)
+![MQTT](https://img.shields.io/badge/MQTT-Mosquitto-660066)
 
-The system is built for scalability and research, allowing for the concurrent operation of two distinct data streams:
+A multi-process, multi-threaded Python streaming pipeline for **real-time Electromyography (EMG) acquisition, signal processing, muscle fatigue detection, and dual-broker telemetry streaming** (Apache Kafka & MQTT), built for intelligent exoskeleton assistance during overhead tasks.
 
-1.  **Raw Data Stream**: Forwards the raw, unprocessed EMG data directly to a message broker (Kafka or MQTT) for recording, offline analysis, or use in other real-time applications.
-2.  **Processed Feature Stream**: Performs advanced signal processing using the `libemg` library to extract meaningful features, analyzes them for fatigue, and streams the results to Kafka.
+The pipeline runs two concurrent data pathways:
 
-This dual-stream approach provides maximum flexibility, offering immediate access to raw data while simultaneously providing a high-level, processed data feed with built-in fatigue analytics.
+1. **Raw EMG Stream**: Publishes low-latency raw multi-channel sensor samples to **Kafka or MQTT** for logging, replay, or downstream consumers.
+2. **Processed Feature & Fatigue Stream**: Applies bandpass filtering and sliding-window feature extraction (`RMS`, `%MVC`, `MDF`, `MNF`, `MNP`) via `libemg`, performs linear-regression fatigue trend detection on Median Frequency (MDF), and emits structured fatigue alerts to **Apache Kafka**.
 
-## High-Level Architecture
+---
 
-The pipeline follows a modular, parallel data flow:
+## Architecture
 
-1.  **Data Acquisition**: A dedicated process for each MCell device (`mcell_ble_udp_streamer.py`) connects via Bluetooth Low Energy (BLE), parses the device's data header, and streams the raw EMG samples over UDP to a local port.
-2.  **UDP Ingestion & Fan-Out**: The main processor (`libemg_processor_main.py`) listens on the specified UDP ports. As soon as a data packet arrives, it is immediately fanned out to two parallel pathways:
-      * **Pathway A (Raw Streaming)**: The raw data is instantly sent to the `raw_emg_broker_client.py` module, which formats it as a JSON message and publishes it to a pre-configured Kafka or MQTT topic.
-      * **Pathway B (Feature Extraction)**: The same raw data is added to a buffer for signal processing.
-3.  **Signal Processing & Feature Extraction**: For each device, a dedicated thread windows the buffered data, applies digital filters, and uses the `libemg` library to extract features like Root Mean Square (RMS), Median Frequency (MDF), and Mean Power (MNP).
-4.  **Fatigue Analysis**: While the project is designed to be forward-compatible with high-frequency (\>=1kHz) streaming for more robust fatigue analysis, it currently implements a functional fatigue detection algorithm based on the slope of the MDF trend, which can be used for preliminary analysis.
-5.  **Processed Data Streaming**: All extracted features and any generated fatigue alerts are serialized and sent to dedicated Kafka topics.
-6.  **Calibration & Visualization**: The pipeline includes a standalone utility (`mvc_calibration_tool_live.py`) for MVC calibration and an optional live plotting feature to visualize both raw signals and extracted features in real-time.
+```mermaid
+flowchart LR
+    subgraph Acquisition["1. Acquisition (Isolated Processes)"]
+        BLE["MCell BLE Sensors\n(mcell_ble_udp_streamer.py)"]
+        MOCK["Synthetic EMG Simulator\n(mock_ble_streamer.py)"]
+    end
 
-## Features
+    subgraph Ingestion["2. UDP Ingestion & Fan-Out (libemg_processor_main.py)"]
+        UDP["Per-Device UDP Listeners\n(Ports 50001–50003)"]
+    end
 
-  * **Dual Data Streams**: Simultaneously stream raw EMG data to Kafka/MQTT and processed features/alerts to Kafka.
-  * **Broker Agnostic**: Easily switch between Kafka and MQTT for raw data streaming via the configuration file.
-  * **Multi-Device Streaming**: Concurrently stream data from multiple MCell BLE devices, each handled in an isolated process for robustness.
-  * **Real-Time Feature Extraction**: Utilizes the `libemg` library to calculate a variety of EMG features from a sliding window.
-  * **MVC Normalization**: Includes a calibration tool to record Maximum Voluntary Contraction (MVC) and calculate normalized RMS (%MVC), a standard metric for muscle effort.
-  * **Configurable Fatigue Detection**: Implements a fatigue detection algorithm based on the slope and R² value of the MDF trend over time.
-  * **Live Visualization**: Optional real-time plotting of both raw EMG signals and extracted features using Matplotlib.
-  * **Highly Configurable**: All parameters—from device addresses and broker endpoints to filter settings and fatigue thresholds—are managed in a single configuration file (`config_live.py`).
-  * **Robust & Concurrent**: Uses a combination of `multiprocessing` and `threading` for efficient and resilient operation.
+    subgraph RawPath["Pathway A: Raw Telemetry"]
+        RAW["RawEMGBrokerClient\n(raw_emg_broker_client.py)"]
+        RAW_B["Kafka / MQTT\nRaw EMG Topics"]
+    end
 
-## Setup and Installation
+    subgraph FeaturePath["Pathway B: Signal Processing & Fatigue Analytics"]
+        FILT["Bandpass Filter + Sliding Window\n(1.0s window, 50% overlap)"]
+        FE["LibEMG Feature Extractor\n(RMS, %MVC, MDF, MNF, MNP)"]
+        FAT["MDF Trend Worker Pool\n(fatigue_analyzer.py)"]
+        K_FEAT["Kafka: Features Topic"]
+        K_ALERT["Kafka: Fatigue Alerts Topic"]
+    end
 
-### Prerequisites
+    BLE -->|Pickled UDP Datagroups| UDP
+    MOCK -->|Pickled UDP Datagroups| UDP
+    UDP --> RAW --> RAW_B
+    UDP --> FILT --> FE
+    FE --> K_FEAT
+    FE --> FAT --> K_ALERT
+```
 
-  * Python 3.8+
-  * An running Apache Kafka and/or an MQTT broker (e.g., Mosquitto).
-  * Access to the MCell BLE devices.
+---
 
-### Installation
+## Key Features
 
-1.  **Clone the repository:**
+- **Dual Concurrent Data Streams**: Simultaneously streams raw EMG samples (Kafka or MQTT) and processed features / fatigue alerts (Kafka).
+- **Hardware-Free Simulation Mode (`--mock`)**: Includes a synthetic multi-channel EMG UDP generator (`mock_ble_streamer.py`) with realistic downward MDF spectral shift so anyone can test and demo fatigue detection without physical BLE hardware.
+- **One-Command Local Brokers**: Ships with a KRaft-mode Apache Kafka + Mosquitto MQTT `docker-compose.yml`.
+- **Multi-Device Isolation**: Spawns an isolated process per wireless EMG unit (`Shirt01-Left`, `Shirt01-Right`, `Shirt01-Trunk`) feeding dedicated processor threads over localhost UDP.
+- **MVC Normalization & Fatigue Triage**: Includes an interactive MVC calibration utility (`mvc_calibration_tool_live.py`) for `%MVC` normalization and a thread-pooled MDF linear-regression detector (`slope` + `R²` thresholds with cooldown gating).
+- **Environment-Driven Configuration**: All broker hosts, topics, BLE addresses, and thresholds are configurable via environment variables (see `.env.example`) and `config_live.py`.
 
-    ```bash
-    git clone https://github.com/roshanmgupta/Exoskeleton.gi
-    cd <your-repo-directory>
-    ```
+---
 
-2.  **Install Python dependencies:**
-    It is highly recommended to use a virtual environment.
+## Quick Start
 
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-    pip install -r requirements.txt
-    ```
+### 1. Clone & Install
+
+```bash
+git clone https://github.com/roshanmgupta/Exoskeleton.git
+cd Exoskeleton
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# Linux / macOS:
+source venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+### 2. Run Locally Without Hardware (Dry-Run Demo)
+
+Test real-time synthetic EMG streaming, bandpass filtering, feature extraction, and fatigue alert detection with **zero external services or BLE hardware**:
+
+```bash
+python libemg_processor_main.py --mock --dry-run --duration 30
+```
+
+Add `--visualize` to open the real-time Matplotlib waveform & MDF plot window.
+
+### 3. Run Full End-to-End Streaming Locally (Docker Kafka + MQTT)
+
+Start local Kafka (`localhost:9092`) and Mosquitto MQTT (`localhost:1883`):
+
+```bash
+docker compose up -d
+python libemg_processor_main.py --mock
+```
+
+To switch raw streaming to MQTT instead of Kafka:
+
+```bash
+RAW_BROKER_TYPE=mqtt python libemg_processor_main.py --mock
+```
+
+### 4. Run with Physical MCell BLE Hardware
+
+1. Discover your sensor MAC addresses:
+   ```bash
+   python BleScan.py
+   ```
+2. Copy `.env.example` to `.env` (or export `BLE_ADDR_LEFT`, `BLE_ADDR_RIGHT`, `BLE_ADDR_TRUNK`, and `KAFKA_BROKERS`).
+3. Perform one-time MVC calibration to generate `mvc_references.json`:
+   ```bash
+   python mvc_calibration_tool_live.py
+   ```
+4. Launch the live pipeline:
+   ```bash
+   python libemg_processor_main.py
+   ```
+
+Press `Ctrl+C` for graceful shutdown of all streamer processes, worker threads, and broker clients.
+
+---
 
 ## Configuration
 
-All system parameters are configured in the `config_live.py` file. Before running the application, you must review and edit this file.
+Key environment variables (defaults live in `config_live.py` and `.env.example`):
 
-**Key settings to configure:**
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka bootstrap servers |
+| `RAW_BROKER_TYPE` | `kafka` | Raw EMG broker backend (`kafka` or `mqtt`) |
+| `MQTT_HOST` / `MQTT_PORT` | `localhost` / `1883` | MQTT broker endpoint when `RAW_BROKER_TYPE=mqtt` |
+| `PARTICIPANT_ID` | `demo-participant-01` | Identifier attached to feature payloads |
+| `BLE_ADDR_LEFT` / `RIGHT` / `TRUNK` | `00:00:00:00:00:01..03` | Physical MCell BLE sensor addresses |
+| `ENABLE_LIVE_VISUALIZATION` | `false` | Enable live Matplotlib plots (`true`/`false`) |
 
-  * `RAW_EMG_STREAMER`:
-      * Set `ENABLE` to `True` to send raw EMG data.
-      * Choose your `BROKER_TYPE`: `"kafka"` or `"mqtt"`.
-      * Fill in the appropriate configuration block (`KAFKA_RAW_CONFIG` or `MQTT_RAW_CONFIG`) with your broker details and topics.
-  * `KAFKA_BROKERS`, `FATIGUE_ALERT_TOPIC`, etc.: Your Kafka endpoints for the processed feature stream.
-  * `DEVICE_STREAMERS_CONFIG`: A list of dictionaries, one for each MCell device. You **must** enter the correct `ble_address`, `udp_port`, and channel information for each device.
-  * `LIBEMG_...`: Parameters for signal processing, such as window length and features to extract.
-  * `FATIGUE_ANALYSIS_...`: Thresholds for the fatigue detection algorithm.
-  * `ENABLE_LIVE_VISUALIZATION`: Set to `True` or `False` to control the live plotting feature.
+---
 
-## How to Run
+## Project Structure
 
-The application is run in two stages: a one-time calibration followed by the main processing pipeline.
+```text
+Exoskeleton/
+├── libemg_processor_main.py      # Main orchestrator (UDP ingestion, LibEMG features, CLI flags)
+├── mcell_ble_udp_streamer.py     # Isolated BLE acquisition & header-parsing UDP streamer
+├── mock_ble_streamer.py          # Synthetic multi-channel EMG UDP streamer with fatigue ramp
+├── fatigue_analyzer.py           # Linear-regression MDF fatigue detector & Kafka alerter
+├── raw_emg_broker_client.py      # Broker-agnostic Kafka / MQTT publisher for raw EMG
+├── mvc_calibration_tool_live.py  # Interactive MVC calibration utility
+├── BleScan.py                    # BLE device discovery helper
+├── config_live.py                # Centralized env-driven configuration
+├── mvc_references.json           # Sample MVC reference values for %MVC normalization
+├── docker-compose.yml            # Local Kafka (KRaft) + Mosquitto MQTT stack
+├── docker/mosquitto.conf         # Local MQTT broker configuration
+├── tests/test_pipeline.py        # Unit tests for fatigue analytics, mock streamer & config
+├── .github/workflows/ci.yml      # Automated syntax & unit test workflow
+├── .env.example                  # Environment variable template
+└── requirements.txt              # Python dependencies
+```
 
-### Step 1: Perform MVC Calibration (Required First Step)
+---
 
-This step measures the peak muscle activation for each muscle of interest, which is used as a reference for normalization. You must run this tool once to generate the `mvc_references.json` file.
+## Running Tests
 
-1.  Ensure the MCell devices are on and available for connection.
-2.  Run the calibration script from your terminal:
-    ```bash
-    python mvc_calibration_tool_live.py
-    ```
-3.  The tool will prompt you to perform a maximal contraction for each muscle defined in the `fatigue_channel_map` in your config file. Follow the on-screen instructions.
-4.  Upon completion, the script will create/update the `mvc_references.json` file with the calculated peak RMS values.
-
-### Step 2: Launch the Main Processing Pipeline
-
-Once calibration is complete and your `config_live.py` is set up, you can start the main application.
-
-1.  Ensure your Kafka/MQTT brokers are running and accessible.
-2.  Run the main processor script:
-    ```bash
-    python libemg_processor_main.py
-    ```
-3.  The application will start, launching a streamer process for each configured device and a processor thread for each data stream.
-4.  You will see log messages in your terminal indicating the status of all broker connections, BLE connections, and UDP listeners.
-5.  If `ENABLE_LIVE_VISUALIZATION` is `True`, a Matplotlib window will appear, displaying the specified signals in real time.
-6.  To stop the application, press `Ctrl+C` in the terminal. The application will perform a graceful shutdown of all processes and threads.
-
-## Code Structure
-
-  * `config_live.py`: Central configuration file for all parameters.
-  * `libemg_processor_main.py`: The main application entry point. Orchestrates streamer processes, data processing threads, and all broker clients.
-  * `raw_emg_broker_client.py`: A dedicated client for publishing raw EMG data to either Kafka or MQTT, based on the configuration.
-  * `mcell_ble_udp_streamer.py`: Manages the BLE connection, header parsing, and UDP streaming for a single MCell device.
-  * `mvc_calibration_tool_live.py`: A standalone command-line tool for performing MVC calibration.
-  * `fatigue_analyzer.py`: Contains the fatigue detection logic based on linear regression of MDF values.
-  * `requirements.txt`: A list of all Python package dependencies and their versions.
-  * `mvc_references.json`: Stores the output of the calibration tool. It is used as an input by the main processor for %MVC calculation.
+```bash
+python -m unittest discover -s tests -v
+```

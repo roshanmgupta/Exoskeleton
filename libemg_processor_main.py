@@ -1,3 +1,4 @@
+import argparse
 import logging
 import time
 import threading
@@ -31,6 +32,7 @@ import config_live as config # Your configuration file
 from fatigue_analyzer import perform_fatigue_analysis_and_alert # Your fatigue logic
 # Assuming mcell_ble_udp_streamer.py contains run_streamer_process and is importable
 from mcell_ble_udp_streamer import run_streamer_process
+from mock_ble_streamer import run_mock_streamer_process
 # NEW: Import the raw EMG broker client
 from raw_emg_broker_client import RawEMGBrokerClient
 
@@ -145,14 +147,15 @@ def device_data_processor_thread(device_id_str: str, device_config_dict: dict,
     device_mvc_references = {}
     if mvc_values:
         for ch_idx, original_ch_name in enumerate(channel_names_ordered):
-            # Check against generic muscle name mapped for fatigue monitoring
+            # Check against generic muscle name or device-prefixed key (as saved by mvc_calibration_tool_live.py)
             monitored_muscle_name = fatigue_channel_map.get(ch_idx)
-            if monitored_muscle_name and monitored_muscle_name in mvc_values:
-                device_mvc_references[monitored_muscle_name] = mvc_values[monitored_muscle_name]
+            if monitored_muscle_name:
+                prefixed_key = f"{device_id_str}_{monitored_muscle_name}"
+                if prefixed_key in mvc_values:
+                    device_mvc_references[monitored_muscle_name] = mvc_values[prefixed_key]
+                elif monitored_muscle_name in mvc_values:
+                    device_mvc_references[monitored_muscle_name] = mvc_values[monitored_muscle_name]
 
-            # Check against specific device_channel key (e.g., "Shirt02-Right_Right Deltoids")
-            # This requires MVC tool to save with such keys or a more complex mapping here.
-            # For simplicity, we assume mvc_values keys directly to monitored_muscle_name or original_channel_name
             if original_ch_name in mvc_values: # If MVCs are keyed by original channel names
                  device_mvc_references[original_ch_name] = mvc_values[original_ch_name]
 
@@ -283,7 +286,7 @@ def process_libemg_features(features_per_channel_dict, window_timestamp_ms,
     num_channels = len(channel_names_ordered_list)
     kafka_payload_base = {
         "thingId": device_id_str,
-        "participant": "Pr07-G01-0701",
+        "participant": config.PARTICIPANT_ID,
         "timestamp_utc": datetime.fromtimestamp(window_timestamp_ms / 1000.0, timezone.utc).isoformat(),
         "sourceTimestampMs": window_timestamp_ms,
         "channels_features": {}
@@ -533,13 +536,47 @@ def update_plots(frame_num):
     return artists # Return all artists that were updated
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Real-time EMG signal processing, fatigue detection, and Kafka/MQTT streaming pipeline."
+    )
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        help="Use synthetic EMG UDP streamers (mock_ble_streamer.py) instead of physical MCell BLE hardware."
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run without connecting to Kafka/MQTT brokers (logs extracted fatigue alerts locally)."
+    )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Enable live Matplotlib visualization (overrides config_live.ENABLE_LIVE_VISUALIZATION)."
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        help="Optional run duration in seconds before graceful shutdown."
+    )
+    return parser.parse_args()
+
+
 def main():
     global fatigue_analysis_executor, mdf_history, main_stop_event, thread_stop_event
     global LIBEMG_WINDOW_SAMPLES, LIBEMG_WINDOW_HOP_SAMPLES, FEATURES_PER_SEC_PER_CHANNEL
     global plot_fig # Make sure plot_fig is accessible for FuncAnimation and cleanup
 
+    args = parse_args()
+    if args.visualize:
+        config.ENABLE_LIVE_VISUALIZATION = True
+
     logging.basicConfig(level=config.LOG_LEVEL, format=config.LOG_FORMAT)
-    logger.info("--- Live LibEMG Processor with Matplotlib Visualization Starting ---")
+    mode_label = "MOCK" if args.mock else "LIVE BLE"
+    broker_label = "DRY-RUN (no brokers)" if args.dry_run else "KAFKA/MQTT"
+    logger.info(f"--- LibEMG Processor Starting [{mode_label} | {broker_label}] ---")
 
     LIBEMG_WINDOW_SAMPLES = int(config.LIBEMG_WINDOW_LENGTH_SEC * config.SAMPLING_RATE_HZ)
     LIBEMG_WINDOW_HOP_SAMPLES = int(LIBEMG_WINDOW_SAMPLES * (1.0 - config.LIBEMG_WINDOW_SLIDE_PERCENT))
@@ -552,9 +589,12 @@ def main():
     logger.info(f"MDF history max length: {mdf_history_maxlen_calc} points.")
     mdf_history = defaultdict(lambda: deque(maxlen=mdf_history_maxlen_calc))
 
-    # Initialize all brokers
-    if not initialize_kafka_producers(): return
-    if not initialize_raw_emg_streamer(): return
+    # Initialize all brokers (skipped in --dry-run mode)
+    if not args.dry_run:
+        if not initialize_kafka_producers(): return
+        if not initialize_raw_emg_streamer(): return
+    else:
+        logger.info("Dry-run mode enabled: skipping Kafka and MQTT broker initialization.")
     
     mvc_references = load_mvc_values()
     fatigue_analysis_executor = ThreadPoolExecutor(max_workers=config.FATIGUE_ANALYSIS_WORKERS, thread_name_prefix='FatigueWork')
@@ -565,15 +605,32 @@ def main():
     signal.signal(signal.SIGTERM, lambda s, f: (logger.info("SIGTERM received by main."), main_stop_event.set(), thread_stop_event.set()))
 
     for dev_conf in config.DEVICE_STREAMERS_CONFIG:
-        logger.info(f"Starting UDP streamer process for {dev_conf['name']}...")
-        p = multiprocessing.Process(target=run_streamer_process,
-                                    args=(dev_conf["ble_address"], dev_conf["name"], config.MUSCLE_SERVICE_CHAR_UUID, config.COMMAND_DICT,
-                                          config.UDP_STREAM_HOST, dev_conf["udp_port"], config.BLE_HEADER_PARSE_TIMEOUT_SECONDS,
-                                          config.BLE_RUN_DURATION_SECONDS, main_stop_event),
-                                    name=f"Streamer-{dev_conf['name']}")
+        if args.mock:
+            logger.info(f"Starting MOCK synthetic EMG UDP streamer for {dev_conf['name']}...")
+            p = multiprocessing.Process(
+                target=run_mock_streamer_process,
+                args=(
+                    dev_conf["name"],
+                    dev_conf["num_channels_expected"],
+                    config.UDP_STREAM_HOST,
+                    dev_conf["udp_port"],
+                    config.SAMPLING_RATE_HZ,
+                    args.duration,
+                    25.0,
+                    main_stop_event,
+                ),
+                name=f"MockStreamer-{dev_conf['name']}"
+            )
+        else:
+            logger.info(f"Starting UDP streamer process for {dev_conf['name']}...")
+            p = multiprocessing.Process(target=run_streamer_process,
+                                        args=(dev_conf["ble_address"], dev_conf["name"], config.MUSCLE_SERVICE_CHAR_UUID, config.COMMAND_DICT,
+                                              config.UDP_STREAM_HOST, dev_conf["udp_port"], config.BLE_HEADER_PARSE_TIMEOUT_SECONDS,
+                                              args.duration if args.duration is not None else config.BLE_RUN_DURATION_SECONDS, main_stop_event),
+                                        name=f"Streamer-{dev_conf['name']}")
         streamer_processes.append(p)
         p.start()
-        time.sleep(1) # Stagger streamer starts
+        time.sleep(0.2 if args.mock else 1) # Stagger streamer starts
 
     for device_config_entry in config.DEVICE_STREAMERS_CONFIG:
         device_identifier = device_config_entry["name"]
@@ -599,9 +656,15 @@ def main():
             logger.warning("Live visualization setup failed or no channels/features to plot.")
 
     logger.info("Application running. Main thread active. Press Ctrl+C to stop.")
+    run_start_time = time.monotonic()
 
     try:
         while not thread_stop_event.is_set():
+            if args.duration is not None and (time.monotonic() - run_start_time) >= args.duration:
+                logger.info(f"Reached configured run duration ({args.duration}s). Initiating graceful shutdown.")
+                main_stop_event.set()
+                thread_stop_event.set()
+                break
             if config.ENABLE_LIVE_VISUALIZATION and plot_fig and plt.get_fignums():
                 try:
                     # This allows Matplotlib's event loop to process and FuncAnimation to draw
