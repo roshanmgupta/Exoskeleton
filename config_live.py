@@ -5,11 +5,10 @@
 # --> python config.live.py
 
 # --- Kafka Configuration ---
-# KAFKA_BROKERS = ['192.168.1.125:9092', '192.168.1.125:9093', '192.168.1.125:9094'] # Server Enrique Home
-KAFKA_BROKERS = ['192.168.50.152:9092', '192.168.50.152:9093', '192.168.50.152:9094'] # Server IFF HPZ4
+
+KAFKA_BROKERS = ['xxx.xxx.xx.xxx:9092', 'xxx.xxx.xx.xxx:9093', 'xxx.xxx.xx.xxx:9094'] 
 FATIGUE_ALERT_TOPIC = 'exolink_emg_mdf_fatigue_alerts'
 FEATURES_VISUALIZATION_TOPIC = 'exolink_emg_shirt01_libemg_features'
-#FEATURES_VISUALIZATION_TOPIC = 'iff_emg_libemg_features'
 
 # --- Raw EMG Data Streamer Configuration ---
 RAW_EMG_STREAMER = {
